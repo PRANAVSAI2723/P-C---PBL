@@ -1,1 +1,122 @@
+#include <WiFi.h>
+#include <WiFiClientSecure.h>
+#include <UniversalTelegramBot.h>
+#include <TinyGPSPlus.h>
 
+// --- WiFi Credentials ---
+const char* ssid = "YOUR_WIFI_NAME";
+const char* password = "YOUR_WIFI_PASSWORD";
+
+// --- Telegram Bot ---
+#define BOT_TOKEN "YOUR_TELEGRAM_BOT_TOKEN"
+#define CHAT_ID "YOUR_TELEGRAM_CHAT_ID"
+
+WiFiClientSecure client;
+UniversalTelegramBot bot(BOT_TOKEN, client);
+
+// --- GPS Setup ---
+#define RXD2 16
+#define TXD2 17
+TinyGPSPlus gps;
+
+// --- Sensor & Actuator Pins ---
+#define MQ2_PIN 34
+#define RELAY_PIN 27
+#define BUTTON_PIN 14
+#define GREEN_LED 25
+#define RED_LED 26
+
+int threshold = 2000;
+bool alcoholDetected = false;
+
+// --- Setup ---
+void setup() {
+  Serial.begin(115200);
+  Serial2.begin(9600, SERIAL_8N1, RXD2, TXD2);
+
+  pinMode(MQ2_PIN, INPUT);
+  pinMode(RELAY_PIN, OUTPUT);
+  pinMode(BUTTON_PIN, INPUT_PULLUP);
+  pinMode(GREEN_LED, OUTPUT);
+  pinMode(RED_LED, OUTPUT);
+
+  digitalWrite(RELAY_PIN, LOW);
+  digitalWrite(GREEN_LED, HIGH);
+  digitalWrite(RED_LED, LOW);
+
+  connectWiFi();
+  client.setInsecure(); // For HTTPS
+}
+
+// --- Connect Wi-Fi ---
+void connectWiFi() {
+  Serial.print("Connecting to WiFi");
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) {
+    Serial.print(".");
+    delay(500);
+  }
+  Serial.println("\n✅ WiFi Connected!");
+  Serial.print("IP: ");
+  Serial.println(WiFi.localIP());
+}
+
+// --- Get GPS Data ---
+bool getGPSData(float &lat, float &lon) {
+  unsigned long start = millis();
+  while (millis() - start < 2000) {
+    while (Serial2.available()) gps.encode(Serial2.read());
+  }
+
+  if (gps.location.isValid()) {
+    lat = gps.location.lat();
+    lon = gps.location.lng();
+    return true;
+  } else {
+    Serial.println("Waiting for GPS fix...");
+    return false;
+  }
+}
+
+// --- Loop ---
+void loop() {
+  int sensorValue = analogRead(MQ2_PIN);
+  Serial.print("MQ2 Value: ");
+  Serial.println(sensorValue);
+
+  if (sensorValue > threshold) {
+    alcoholDetected = true;
+    digitalWrite(RED_LED, HIGH);
+    digitalWrite(GREEN_LED, LOW);
+    digitalWrite(RELAY_PIN, LOW); // Fan OFF
+    Serial.println("🚨 Alcohol Detected!");
+
+    float lat, lon;
+    if (getGPSData(lat, lon)) {
+      String msg = "🚨 Alcohol detected!\n";
+      msg += "Location: https://maps.google.com/?q=" + String(lat, 6) + "," + String(lon, 6);
+      bot.sendMessage(CHAT_ID, msg, "");
+      Serial.println("📩 Sent to Telegram!");
+    } else {
+      bot.sendMessage(CHAT_ID, "🚨 Alcohol detected! (No GPS fix yet)", "");
+    }
+
+    delay(4000);
+  } else {
+    alcoholDetected = false;
+    digitalWrite(RED_LED, LOW);
+    digitalWrite(GREEN_LED, HIGH);
+  }
+
+  // Button control (only if safe)
+  if (!alcoholDetected) {
+    if (digitalRead(BUTTON_PIN) == LOW) {
+      digitalWrite(RELAY_PIN, HIGH); // Fan ON
+      Serial.println("Fan ON (button pressed)");
+    } else {
+      digitalWrite(RELAY_PIN, LOW); // Fan OFF
+    }
+  }
+
+  delay(500);
+}
